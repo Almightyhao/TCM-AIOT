@@ -13,7 +13,7 @@
         <h1 class="text-2xl font-bold mb-6 text-blue-700">中西藥交互作用 CSV 自動整併工具</h1>
         
         <p class="mb-6 text-sm text-gray-600">
-            請依序上傳目前的「現有知識條目 (V4)」與「欲新增的文獻 (Reference)」。<br>
+            請依序上傳「現有知識條目 (乾淨的 V4 檔)」與「欲新增的文獻 (Reference)」。<br>
             系統將自動比對西藥去重、接續標號，並智慧合併文獻來源。
         </p>
 
@@ -98,55 +98,63 @@
 
                     const targetTitle = `${herbName}的中西藥藥物交互作用(drug-drug) interaction, DDI)說明`;
                     
-                    // 1. 處理 Content 說明文字
                     let explanationParts = [];
                     if (abstract) explanationParts.push(abstract);
                     if (mngText) explanationParts.push(`處置建議為${mngText}`);
                     const combinedExplanation = explanationParts.length > 0 ? explanationParts.join('，') : '無詳細說明';
 
-                    // 2. 【核心更新：智慧文獻格式化】
+                    // ==========================================
+                    // 【文獻格式化修正】：無效來源時，只顯示研究種類
+                    // ==========================================
                     let finalRefEntry = "";
-                    if (reference && !reference.includes("#VALUE!") && !reference.includes("#NAME?")) {
-                        let cleanRef = reference.replace(/\r\n|\n|\r/g, " ").trim();
-                        
-                        // 自動將關鍵字映射為標準 Markdown 連結 (不加後綴研究方法)
-                        if (cleanRef.includes("三軍總醫院")) {
-                            finalRefEntry = "- 三軍總醫院臨床藥學部";
-                        } else if (cleanRef.includes("中西藥併用諮詢") || cleanRef.includes("cmdhi")) {
-                            finalRefEntry = "- [中西藥併用諮詢資料庫](https://www.cmdhi.mohw.gov.tw/)";
-                        } else if (cleanRef.includes("奇美")) {
-                            finalRefEntry = "- [奇美藥劑部中西藥交互作用查詢系統](https://www.chimei.org.tw/main/cmh_department/55500/DIS/cdi_search.asp)";
-                        } else if (cleanRef.includes("高雄醫學") || cleanRef.includes("高醫")) {
-                            finalRefEntry = "- [高雄醫學大學附設中和紀念醫院](https://www.kmuh.org.tw/www/pharmacy/inc/files/ChineseMedInteration.pdf)";
-                        } else if (cleanRef.includes("中國醫藥") || cleanRef.includes("dhi.cmu")) {
-                            finalRefEntry = "- [中國醫藥大學中西藥交互作用資訊網](https://dhi.cmu.edu.tw/query/)";
-                        } else {
-                            // 若為一般文獻(如蔡金川)，則照舊加上標記與 Research
-                            if (!cleanRef.startsWith('-')) cleanRef = '- ' + cleanRef;
-                            if (research) {
-                                if (cleanRef.endsWith(')')) {
-                                    cleanRef = cleanRef.slice(0, -1) + `/${research})`;
-                                } else {
-                                    cleanRef += ` (${research})`;
-                                }
-                            }
-                            finalRefEntry = cleanRef;
+                    let cleanRef = reference ? reference.replace(/\r\n|\n|\r/g, " ").trim() : "";
+
+                    // 1. 如果是亂碼、#NAME? 或空值
+                    if (!cleanRef || cleanRef.includes("#VALUE!") || cleanRef.includes("#NAME?")) {
+                        // 因為沒有文獻來源，所以直接拿 Research (例如：健保資料庫分析) 來當作來源顯示
+                        if (research) {
+                            finalRefEntry = "- " + research;
                         }
+                    
+                    // 2. 如果是有寫明的標準資料庫，給予乾淨的連結 (不加後綴研究方法)
+                    } else if (cleanRef.includes("三軍總醫院")) {
+                        finalRefEntry = "- 三軍總醫院臨床藥學部";
+                    } else if (cleanRef.includes("中西藥併用諮詢") || cleanRef.includes("cmdhi")) {
+                        finalRefEntry = "- [中西藥併用諮詢資料庫](https://www.cmdhi.mohw.gov.tw/)";
+                    } else if (cleanRef.includes("奇美")) {
+                        finalRefEntry = "- [奇美藥劑部中西藥交互作用查詢系統](https://www.chimei.org.tw/main/cmh_department/55500/DIS/cdi_search.asp)";
+                    } else if (cleanRef.includes("高雄醫學") || cleanRef.includes("高醫")) {
+                        finalRefEntry = "- [高雄醫學大學附設中和紀念醫院](https://www.kmuh.org.tw/www/pharmacy/inc/files/ChineseMedInteration.pdf)";
+                    } else if (cleanRef.includes("中國醫藥") || cleanRef.includes("dhi.cmu")) {
+                        finalRefEntry = "- [中國醫藥大學中西藥交互作用資訊網](https://dhi.cmu.edu.tw/query/)";
+                    
+                    // 3. 一般獨立文獻 (如蔡金川)，才需要加上 (研究方法)
+                    } else {
+                        if (!cleanRef.startsWith('-')) cleanRef = '- ' + cleanRef;
+                        if (research) {
+                            if (cleanRef.endsWith(')')) {
+                                cleanRef = cleanRef.slice(0, -1) + `/${research})`;
+                            } else {
+                                cleanRef += ` (${research})`;
+                            }
+                        }
+                        finalRefEntry = cleanRef;
                     }
 
+                    // 尋找 V4 對應中藥
                     let matchIndex = v4Data.findIndex(vRow => vRow[0] && vRow[0].trim() === targetTitle);
 
                     if (matchIndex !== -1) {
                         let currentContent = v4Data[matchIndex][1] || '';
                         let currentCCol = v4Data[matchIndex][2] || '';
 
-                        // 防呆去重：若該西藥已存在
+                        // 防呆去重
                         if (currentContent.toLowerCase().includes(drugName.toLowerCase())) {
                             skippedCount++;
                             continue;
                         }
 
-                        // 抓取最大標號
+                        // 抓取標號
                         let nextNum = 1;
                         const numRegex = /^(\d+)\./gm;
                         let match;
@@ -155,18 +163,17 @@
                             if (num >= nextNum) nextNum = num + 1;
                         }
 
-                        // 新增西藥內容
                         const newContentEntry = `\n${nextNum}. ${drugName}；交互說明:${combinedExplanation}`;
                         v4Data[matchIndex][1] = currentContent + newContentEntry;
 
-                        // 【核心更新：文獻去重邏輯】
-                        // 將目前的文獻欄位拆分成陣列比對，避免重複加入相同的連結
-                        let existingRefs = currentCCol.split('\n').map(s => s.trim()).filter(s => s !== '');
-                        if (finalRefEntry && !existingRefs.includes(finalRefEntry)) {
-                            existingRefs.push(finalRefEntry); // 只有當這條文獻不存在時才加入
+                        // 【文獻去重寫入】：只有當有文獻時，且原本沒寫過，才加進去
+                        if (finalRefEntry) {
+                            let existingRefs = currentCCol.split('\n').map(s => s.trim()).filter(s => s !== '');
+                            if (!existingRefs.includes(finalRefEntry)) {
+                                existingRefs.push(finalRefEntry);
+                            }
+                            v4Data[matchIndex][2] = existingRefs.join('\n');
                         }
-                        v4Data[matchIndex][2] = existingRefs.join('\n'); // 重新組合並寫回
-                        
                         addedCount++;
 
                     } else {
@@ -174,7 +181,6 @@
                         const newContentBase = `中西藥交互作用說明\n中藥名稱：${herbName}\n1. ${drugName}；交互說明:${combinedExplanation}`;
                         
                         let newRow = [targetTitle, newContentBase, finalRefEntry];
-                        // 補齊可能存在的空白欄位
                         if (v4Data[0] && v4Data[0].length > 3) {
                             for (let i = 3; i < v4Data[0].length; i++) newRow.push('');
                         }
