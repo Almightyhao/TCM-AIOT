@@ -64,7 +64,7 @@
                 return;
             }
 
-            logArea.textContent = ''; // 清空日誌
+            logArea.textContent = ''; 
             processBtn.disabled = true;
             processBtn.textContent = '處理中...';
 
@@ -73,11 +73,9 @@
                 const v4Raw = await readFileAsText(v4Input.files[0]);
                 const refRaw = await readFileAsText(refInput.files[0]);
 
-                // 解析 V4 (使用二維陣列保留原始結構)
                 const v4Parsed = Papa.parse(v4Raw, { header: false, skipEmptyLines: true });
                 let v4Data = v4Parsed.data;
 
-                // 解析 Reference (使用物件方便依欄位名稱取值)
                 const refParsed = Papa.parse(refRaw, { header: true, skipEmptyLines: true });
                 const refData = refParsed.data;
 
@@ -88,40 +86,65 @@
                 log(`成功讀取 V4 共有 ${v4Data.length} 行資料`);
                 log(`成功讀取 Reference 共有 ${refData.length} 筆資料\n---`);
 
-                // 開始比對
                 for (let row of refData) {
                     const herbName = (row['HERBNAME'] || '').trim();
                     const drugName = (row['DRUGNAME'] || '').trim();
                     const abstract = (row['IABSTRACT'] || '').trim();
                     const mngText = (row['MNGTEXT'] || '').trim();
                     const research = (row['RESEARCH'] || '').trim();
-                    const reference = (row['REFERENCE'] || '').trim();
+                    let reference = (row['REFERENCE'] || '').trim();
 
                     if (!herbName || !drugName) continue;
 
                     const targetTitle = `${herbName}的中西藥藥物交互作用(drug-drug) interaction, DDI)說明`;
                     
-                    // 組合解說文字
+                    // 1. 處理 Content 說明文字
                     let explanationParts = [];
                     if (abstract) explanationParts.push(abstract);
                     if (mngText) explanationParts.push(`處置建議為${mngText}`);
                     const combinedExplanation = explanationParts.length > 0 ? explanationParts.join('，') : '無詳細說明';
 
-                    // 尋找 V4 中對應的 Title (假設 title 在第一欄 index 0)
+                    // 2. 【核心更新】處理 Reference 與 Research 合併格式
+                    let cleanRef = reference.replace(/\r\n|\n|\r/g, " ").trim();
+                    let finalRefEntry = "";
+
+                    if (!cleanRef || cleanRef.includes("#VALUE!") || cleanRef.includes("#NAME?")) {
+                        // 處理無效資料
+                        finalRefEntry = `- [中國醫藥大學中西藥交互作用資訊網](https://dhi.cmu.edu.tw/query/)`;
+                        if (research) {
+                            finalRefEntry += ` (${research})`;
+                        }
+                    } else {
+                        // 確保前面有 "-" 符號
+                        if (!cleanRef.startsWith('-')) {
+                            cleanRef = '- ' + cleanRef;
+                        }
+                        
+                        // 智慧合併文獻種類 (Research)
+                        if (research) {
+                            if (cleanRef.endsWith(')')) {
+                                // 如果結尾有括號，打開它並塞入 '/文獻種類'
+                                cleanRef = cleanRef.slice(0, -1) + `/${research})`;
+                            } else {
+                                // 沒有括號就直接補在後面
+                                cleanRef += ` (${research})`;
+                            }
+                        }
+                        finalRefEntry = cleanRef;
+                    }
+
                     let matchIndex = v4Data.findIndex(vRow => vRow[0] && vRow[0].trim() === targetTitle);
 
                     if (matchIndex !== -1) {
-                        // 【已存在中藥】
                         let currentContent = v4Data[matchIndex][1] || '';
                         let currentCCol = v4Data[matchIndex][2] || '';
 
-                        // 防呆去重：若該西藥已存在
+                        // 判斷是否重複
                         if (currentContent.toLowerCase().includes(drugName.toLowerCase())) {
                             skippedCount++;
                             continue;
                         }
 
-                        // 抓取最大標號
                         let nextNum = 1;
                         const numRegex = /^(\d+)\./gm;
                         let match;
@@ -130,21 +153,18 @@
                             if (num >= nextNum) nextNum = num + 1;
                         }
 
+                        // 新增西藥內容 (保持編號)
                         const newContentEntry = `\n${nextNum}. ${drugName}；交互說明:${combinedExplanation}`;
-                        const newRefEntry = `[${nextNum}] 文獻種類：${research}\n文獻來源：${reference}`;
 
+                        // 寫入 V4 (文獻不再加編號，直接換行條列)
                         v4Data[matchIndex][1] = currentContent + newContentEntry;
-                        v4Data[matchIndex][2] = currentCCol.trim() ? (currentCCol + "\n\n" + newRefEntry) : newRefEntry;
+                        v4Data[matchIndex][2] = currentCCol.trim() ? (currentCCol + "\n" + finalRefEntry) : finalRefEntry;
                         addedCount++;
 
                     } else {
-                        // 【尚未建立的中藥】自動新增一列
                         const newContentBase = `中西藥交互作用說明\n中藥名稱：${herbName}\n1. ${drugName}；交互說明:${combinedExplanation}`;
-                        const newRefEntry = `[1] 文獻種類：${research}\n文獻來源：${reference}`;
                         
-                        // 建立新陣列 (Title, Content, Reference(C欄), 其他欄位留空)
-                        let newRow = [targetTitle, newContentBase, newRefEntry];
-                        // 如果 V4 標題列有多於 3 欄，補齊空字串
+                        let newRow = [targetTitle, newContentBase, finalRefEntry];
                         if (v4Data[0] && v4Data[0].length > 3) {
                             for (let i = 3; i < v4Data[0].length; i++) newRow.push('');
                         }
@@ -161,10 +181,7 @@
                 log(`- 其中包含 ${newHerbCount} 個全新中藥條目`);
                 log(`- 略過重複西藥 ${skippedCount} 筆`);
 
-                // 轉出 CSV
                 const csvOutput = Papa.unparse(v4Data);
-                
-                // 加入 BOM 讓 Excel 能正確讀取 UTF-8 中文
                 const blob = new Blob(["\uFEFF" + csvOutput], { type: 'text/csv;charset=utf-8;' });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
