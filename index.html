@@ -14,7 +14,7 @@
         
         <p class="mb-6 text-sm text-gray-600">
             請依序上傳「現有知識條目 (V4 檔)」與「欲新增的文獻 (Reference)」。<br>
-            系統內建<b>核彈級修復引擎</b>，能自動接合被切斷的歷史亂碼，確保文獻來源絕對乾淨不重複。
+            系統內建<b>智慧修復引擎</b>，能自動還原跑版的超連結格式，並確保文獻乾淨不重複。
         </p>
 
         <div class="space-y-4 mb-8">
@@ -56,34 +56,62 @@
         }
 
         // ==========================================
-        // 【核彈級：自動修復與去重引擎】
+        // 【智慧修復與去重引擎】
         // ==========================================
         function mergeAndDeduplicateRefs(existingText, newRef) {
-            let rawText = existingText || '';
+            // 1. 依據換行符號切開 (解決之前 regex 誤切的問題)
+            let lines = (existingText || '').split(/\r?\n/).map(s => s.trim()).filter(s => s !== '');
+            let repaired = [];
             
-            // 1. 利用正規表示式，強制從 '- ' 或 '[' 切開每一條文獻
-            let parts = rawText.split(/(?=- |\[)/);
+            for (let line of lines) {
+                // 如果是一條孤立的 "-"，直接忽略 (清掃上一版的殘骸)
+                if (line === '-') continue;
+
+                // 判斷是否為新的一條文獻
+                if (line.startsWith('-') || line.startsWith('[')) {
+                    // 如果是以 '[' 開頭但缺少了 '- '，幫它補回來
+                    if (line.startsWith('[') && !line.startsWith('-')) {
+                        line = '- ' + line;
+                    }
+                    repaired.push(line);
+                } else {
+                    // 如果不是新文獻，代表是斷掉的尾巴，接回上一句！
+                    if (repaired.length > 0) {
+                        repaired[repaired.length - 1] += line;
+                    } else {
+                        if (!line.startsWith('-')) line = '- ' + line;
+                        repaired.push(line);
+                    }
+                }
+            }
             
-            let repaired = parts.map(part => {
-                // 2. 碾碎所有換行符號！把斷掉的字串接回來
-                let cleaned = part.replace(/[\r\n]+/g, "").trim();
-                
-                // 3. 終極防呆：如果在 Excel 裡連空白都被加進去，直接強制癒合為標準字串
-                cleaned = cleaned.replace(/健\s*保\s*資\s*料\s*庫\s*分\s*析/g, "健保資料庫分析");
-                
-                return cleaned;
-            }).filter(p => p !== ''); // 過濾掉空行
+            // 2. 針對每一行進行最終的格式美容
+            repaired = repaired.map(line => {
+                // 如果行尾有多餘的 '-' (例如 三軍總醫院臨床藥學部-)，削掉它
+                if (line.endsWith('-')) {
+                    line = line.slice(0, -1).trim();
+                }
+                // 修復被打散的健保資料庫分析
+                line = line.replace(/健\s*保\s*資\s*料\s*庫\s*分\s*析/g, "健保資料庫分析");
+                return line;
+            });
             
-            // 將新文獻也做同樣的碾壓處理
+            // 3. 處理新加入的文獻
             if (newRef) {
                 let nRef = newRef.replace(/[\r\n]+/g, "").trim();
                 nRef = nRef.replace(/健\s*保\s*資\s*料\s*庫\s*分\s*析/g, "健保資料庫分析");
-                if(nRef !== "") {
+                if (nRef !== "" && nRef !== "-") {
+                    // 確保新文獻格式正確
+                    if (nRef.startsWith('[') && !nRef.startsWith('-')) {
+                        nRef = '- ' + nRef;
+                    } else if (!nRef.startsWith('-')) {
+                        nRef = '- ' + nRef;
+                    }
                     repaired.push(nRef);
                 }
             }
             
-            // 4. 利用 Set 瞬間消除所有重複項
+            // 4. 終極去重：利用 Set 瞬間消除所有重複項
             let uniqueRefs = [...new Set(repaired)];
             return uniqueRefs.join('\n');
         }
@@ -124,7 +152,6 @@
                     const drugName = (row['DRUGNAME'] || '').replace(/[\r\n]+/g, "").trim();
                     const abstract = (row['IABSTRACT'] || '').replace(/[\r\n]+/g, "").trim();
                     const mngText = (row['MNGTEXT'] || '').replace(/[\r\n]+/g, "").trim();
-                    // 研究種類也強制壓扁修復
                     let research = (row['RESEARCH'] || '').replace(/[\r\n]+/g, "").trim();
                     research = research.replace(/健\s*保\s*資\s*料\s*庫\s*分\s*析/g, "健保資料庫分析");
                     let reference = (row['REFERENCE'] || '').trim();
@@ -176,7 +203,7 @@
                         let currentContent = v4Data[matchIndex][1] || '';
                         let currentCCol = v4Data[matchIndex][2] || '';
 
-                        // 防呆去重
+                        // 防呆去重 (只找 DRUGNAME)
                         if (currentContent.toLowerCase().includes(drugName.toLowerCase())) {
                             skippedCount++;
                             continue;
@@ -193,7 +220,7 @@
                         const newContentEntry = `\n${nextNum}. ${drugName}；交互說明:${combinedExplanation}`;
                         v4Data[matchIndex][1] = currentContent + newContentEntry;
 
-                        // 【重點！】呼叫核彈級修復去重引擎，洗白之前的壞掉資料
+                        // 【重點！】呼叫智慧修復去重引擎，洗白之前的壞掉資料
                         v4Data[matchIndex][2] = mergeAndDeduplicateRefs(currentCCol, finalRefEntry);
                         addedCount++;
 
