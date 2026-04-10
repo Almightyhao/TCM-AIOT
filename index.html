@@ -14,7 +14,7 @@
         
         <p class="mb-6 text-sm text-gray-600">
             請依序上傳「現有知識條目 (乾淨的 V4 檔)」與「欲新增的文獻 (Reference)」。<br>
-            系統將自動比對西藥去重、接續標號，並智慧合併文獻來源。
+            系統將自動濾除亂碼與隱藏換行，並智慧合併文獻來源。
         </p>
 
         <div class="space-y-4 mb-8">
@@ -87,11 +87,12 @@
                 log(`成功讀取 Reference 共有 ${refData.length} 筆資料\n---`);
 
                 for (let row of refData) {
-                    const herbName = (row['HERBNAME'] || '').trim();
-                    const drugName = (row['DRUGNAME'] || '').trim();
-                    const abstract = (row['IABSTRACT'] || '').trim();
-                    const mngText = (row['MNGTEXT'] || '').trim();
-                    const research = (row['RESEARCH'] || '').trim();
+                    // 【強力濾網】：把所有欄位裡面的「隱藏換行」全部移除，讓字串連在一起
+                    const herbName = (row['HERBNAME'] || '').replace(/\r\n|\n|\r/g, "").trim();
+                    const drugName = (row['DRUGNAME'] || '').replace(/\r\n|\n|\r/g, "").trim();
+                    const abstract = (row['IABSTRACT'] || '').replace(/\r\n|\n|\r/g, "").trim();
+                    const mngText = (row['MNGTEXT'] || '').replace(/\r\n|\n|\r/g, "").trim();
+                    const research = (row['RESEARCH'] || '').replace(/\r\n|\n|\r/g, "").trim();
                     let reference = (row['REFERENCE'] || '').trim();
 
                     if (!herbName || !drugName) continue;
@@ -103,20 +104,17 @@
                     if (mngText) explanationParts.push(`處置建議為${mngText}`);
                     const combinedExplanation = explanationParts.length > 0 ? explanationParts.join('，') : '無詳細說明';
 
-                    // ==========================================
-                    // 【文獻格式化修正】：無效來源時，只顯示研究種類
-                    // ==========================================
                     let finalRefEntry = "";
                     let cleanRef = reference ? reference.replace(/\r\n|\n|\r/g, " ").trim() : "";
 
                     // 1. 如果是亂碼、#NAME? 或空值
                     if (!cleanRef || cleanRef.includes("#VALUE!") || cleanRef.includes("#NAME?")) {
-                        // 因為沒有文獻來源，所以直接拿 Research (例如：健保資料庫分析) 來當作來源顯示
+                        // 此時 research 的換行已經被清除了，例如會是乾淨的 "健保資料庫分析"
                         if (research) {
                             finalRefEntry = "- " + research;
                         }
                     
-                    // 2. 如果是有寫明的標準資料庫，給予乾淨的連結 (不加後綴研究方法)
+                    // 2. 如果是有寫明的標準資料庫
                     } else if (cleanRef.includes("三軍總醫院")) {
                         finalRefEntry = "- 三軍總醫院臨床藥學部";
                     } else if (cleanRef.includes("中西藥併用諮詢") || cleanRef.includes("cmdhi")) {
@@ -148,7 +146,7 @@
                         let currentContent = v4Data[matchIndex][1] || '';
                         let currentCCol = v4Data[matchIndex][2] || '';
 
-                        // 防呆去重
+                        // 防呆去重 (只找 DRUGNAME)
                         if (currentContent.toLowerCase().includes(drugName.toLowerCase())) {
                             skippedCount++;
                             continue;
@@ -166,7 +164,7 @@
                         const newContentEntry = `\n${nextNum}. ${drugName}；交互說明:${combinedExplanation}`;
                         v4Data[matchIndex][1] = currentContent + newContentEntry;
 
-                        // 【文獻去重寫入】：只有當有文獻時，且原本沒寫過，才加進去
+                        // 【文獻去重寫入】：現在字串被清乾淨了，去重功能就能完美發揮
                         if (finalRefEntry) {
                             let existingRefs = currentCCol.split('\n').map(s => s.trim()).filter(s => s !== '');
                             if (!existingRefs.includes(finalRefEntry)) {
