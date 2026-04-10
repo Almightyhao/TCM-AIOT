@@ -13,8 +13,8 @@
         <h1 class="text-2xl font-bold mb-6 text-blue-700">中西藥交互作用 CSV 自動整併工具</h1>
         
         <p class="mb-6 text-sm text-gray-600">
-            請依序上傳「現有知識條目 (V4)」與「欲新增的文獻 (Reference)」。<br>
-            系統內建<b>自動修復引擎</b>，會自動修復斷行亂碼，並確保文獻來源絕對不重複。
+            請依序上傳「現有知識條目 (V4 檔)」與「欲新增的文獻 (Reference)」。<br>
+            系統內建<b>核彈級修復引擎</b>，能自動接合被切斷的歷史亂碼，確保文獻來源絕對乾淨不重複。
         </p>
 
         <div class="space-y-4 mb-8">
@@ -55,32 +55,35 @@
             });
         }
 
-        // 【核心新增】：自動修復斷掉的句子並去重
+        // ==========================================
+        // 【核彈級：自動修復與去重引擎】
+        // ==========================================
         function mergeAndDeduplicateRefs(existingText, newRef) {
-            // 處理舊資料：依據換行拆分，移除頭尾空白
-            let lines = (existingText || '').split(/\r?\n/).map(s => s.trim()).filter(s => s !== '');
-            let repaired = [];
+            let rawText = existingText || '';
             
-            for (let line of lines) {
-                // 如果這行是以 '-' 或 '[' 開頭，代表這是一句完整的開頭
-                if (line.startsWith('-') || line.startsWith('[')) {
-                    repaired.push(line);
-                } else {
-                    // 如果不是，代表它是被換行鍵切斷的尾巴，接回上一句！
-                    if (repaired.length > 0) {
-                        repaired[repaired.length - 1] += line;
-                    } else {
-                        repaired.push(line);
-                    }
+            // 1. 利用正規表示式，強制從 '- ' 或 '[' 切開每一條文獻
+            let parts = rawText.split(/(?=- |\[)/);
+            
+            let repaired = parts.map(part => {
+                // 2. 碾碎所有換行符號！把斷掉的字串接回來
+                let cleaned = part.replace(/[\r\n]+/g, "").trim();
+                
+                // 3. 終極防呆：如果在 Excel 裡連空白都被加進去，直接強制癒合為標準字串
+                cleaned = cleaned.replace(/健\s*保\s*資\s*料\s*庫\s*分\s*析/g, "健保資料庫分析");
+                
+                return cleaned;
+            }).filter(p => p !== ''); // 過濾掉空行
+            
+            // 將新文獻也做同樣的碾壓處理
+            if (newRef) {
+                let nRef = newRef.replace(/[\r\n]+/g, "").trim();
+                nRef = nRef.replace(/健\s*保\s*資\s*料\s*庫\s*分\s*析/g, "健保資料庫分析");
+                if(nRef !== "") {
+                    repaired.push(nRef);
                 }
             }
             
-            // 加入新的文獻
-            if (newRef) {
-                repaired.push(newRef);
-            }
-            
-            // 終極去重：利用 Set 確保每句話都是唯一的
+            // 4. 利用 Set 瞬間消除所有重複項
             let uniqueRefs = [...new Set(repaired)];
             return uniqueRefs.join('\n');
         }
@@ -117,12 +120,13 @@
                 log(`成功讀取 Reference 共有 ${refData.length} 筆資料\n---`);
 
                 for (let row of refData) {
-                    // 強力清除所有可能造成問題的換行符號
                     const herbName = (row['HERBNAME'] || '').replace(/[\r\n]+/g, "").trim();
                     const drugName = (row['DRUGNAME'] || '').replace(/[\r\n]+/g, "").trim();
                     const abstract = (row['IABSTRACT'] || '').replace(/[\r\n]+/g, "").trim();
                     const mngText = (row['MNGTEXT'] || '').replace(/[\r\n]+/g, "").trim();
-                    const research = (row['RESEARCH'] || '').replace(/[\r\n]+/g, "").trim();
+                    // 研究種類也強制壓扁修復
+                    let research = (row['RESEARCH'] || '').replace(/[\r\n]+/g, "").trim();
+                    research = research.replace(/健\s*保\s*資\s*料\s*庫\s*分\s*析/g, "健保資料庫分析");
                     let reference = (row['REFERENCE'] || '').trim();
 
                     if (!herbName || !drugName) continue;
@@ -137,12 +141,11 @@
                     let finalRefEntry = "";
                     let cleanRef = reference ? reference.replace(/[\r\n]+/g, " ").trim() : "";
 
-                    // 1. 如果是亂碼、#NAME? 或空值
+                    // 1. 如果是亂碼或空值，只顯示修復好的 research
                     if (!cleanRef || cleanRef.includes("#VALUE!") || cleanRef.includes("#NAME?")) {
                         if (research) {
                             finalRefEntry = "- " + research;
                         }
-                    
                     // 2. 如果是有寫明的標準資料庫
                     } else if (cleanRef.includes("三軍總醫院")) {
                         finalRefEntry = "- 三軍總醫院臨床藥學部";
@@ -154,7 +157,6 @@
                         finalRefEntry = "- [高雄醫學大學附設中和紀念醫院](https://www.kmuh.org.tw/www/pharmacy/inc/files/ChineseMedInteration.pdf)";
                     } else if (cleanRef.includes("中國醫藥") || cleanRef.includes("dhi.cmu")) {
                         finalRefEntry = "- [中國醫藥大學中西藥交互作用資訊網](https://dhi.cmu.edu.tw/query/)";
-                    
                     // 3. 一般獨立文獻
                     } else {
                         if (!cleanRef.startsWith('-')) cleanRef = '- ' + cleanRef;
@@ -168,20 +170,18 @@
                         finalRefEntry = cleanRef;
                     }
 
-                    // 尋找 V4 對應中藥
                     let matchIndex = v4Data.findIndex(vRow => vRow[0] && vRow[0].trim() === targetTitle);
 
                     if (matchIndex !== -1) {
                         let currentContent = v4Data[matchIndex][1] || '';
                         let currentCCol = v4Data[matchIndex][2] || '';
 
-                        // 防呆去重 (只找 DRUGNAME)
+                        // 防呆去重
                         if (currentContent.toLowerCase().includes(drugName.toLowerCase())) {
                             skippedCount++;
                             continue;
                         }
 
-                        // 抓取標號
                         let nextNum = 1;
                         const numRegex = /^(\d+)\./gm;
                         let match;
@@ -193,7 +193,7 @@
                         const newContentEntry = `\n${nextNum}. ${drugName}；交互說明:${combinedExplanation}`;
                         v4Data[matchIndex][1] = currentContent + newContentEntry;
 
-                        // 【重點！】呼叫自動修復與去重引擎
+                        // 【重點！】呼叫核彈級修復去重引擎，洗白之前的壞掉資料
                         v4Data[matchIndex][2] = mergeAndDeduplicateRefs(currentCCol, finalRefEntry);
                         addedCount++;
 
