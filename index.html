@@ -13,8 +13,8 @@
         <h1 class="text-2xl font-bold mb-6 text-blue-700">中西藥交互作用 CSV 自動整併工具</h1>
         
         <p class="mb-6 text-sm text-gray-600">
-            請依序上傳「現有知識條目 (乾淨的 V4 檔)」與「欲新增的文獻 (Reference)」。<br>
-            系統將自動濾除亂碼與隱藏換行，並智慧合併文獻來源。
+            請依序上傳「現有知識條目 (V4)」與「欲新增的文獻 (Reference)」。<br>
+            系統內建<b>自動修復引擎</b>，會自動修復斷行亂碼，並確保文獻來源絕對不重複。
         </p>
 
         <div class="space-y-4 mb-8">
@@ -55,6 +55,36 @@
             });
         }
 
+        // 【核心新增】：自動修復斷掉的句子並去重
+        function mergeAndDeduplicateRefs(existingText, newRef) {
+            // 處理舊資料：依據換行拆分，移除頭尾空白
+            let lines = (existingText || '').split(/\r?\n/).map(s => s.trim()).filter(s => s !== '');
+            let repaired = [];
+            
+            for (let line of lines) {
+                // 如果這行是以 '-' 或 '[' 開頭，代表這是一句完整的開頭
+                if (line.startsWith('-') || line.startsWith('[')) {
+                    repaired.push(line);
+                } else {
+                    // 如果不是，代表它是被換行鍵切斷的尾巴，接回上一句！
+                    if (repaired.length > 0) {
+                        repaired[repaired.length - 1] += line;
+                    } else {
+                        repaired.push(line);
+                    }
+                }
+            }
+            
+            // 加入新的文獻
+            if (newRef) {
+                repaired.push(newRef);
+            }
+            
+            // 終極去重：利用 Set 確保每句話都是唯一的
+            let uniqueRefs = [...new Set(repaired)];
+            return uniqueRefs.join('\n');
+        }
+
         processBtn.addEventListener('click', async () => {
             const v4Input = document.getElementById('v4File');
             const refInput = document.getElementById('refFile');
@@ -87,12 +117,12 @@
                 log(`成功讀取 Reference 共有 ${refData.length} 筆資料\n---`);
 
                 for (let row of refData) {
-                    // 【強力濾網】：把所有欄位裡面的「隱藏換行」全部移除，讓字串連在一起
-                    const herbName = (row['HERBNAME'] || '').replace(/\r\n|\n|\r/g, "").trim();
-                    const drugName = (row['DRUGNAME'] || '').replace(/\r\n|\n|\r/g, "").trim();
-                    const abstract = (row['IABSTRACT'] || '').replace(/\r\n|\n|\r/g, "").trim();
-                    const mngText = (row['MNGTEXT'] || '').replace(/\r\n|\n|\r/g, "").trim();
-                    const research = (row['RESEARCH'] || '').replace(/\r\n|\n|\r/g, "").trim();
+                    // 強力清除所有可能造成問題的換行符號
+                    const herbName = (row['HERBNAME'] || '').replace(/[\r\n]+/g, "").trim();
+                    const drugName = (row['DRUGNAME'] || '').replace(/[\r\n]+/g, "").trim();
+                    const abstract = (row['IABSTRACT'] || '').replace(/[\r\n]+/g, "").trim();
+                    const mngText = (row['MNGTEXT'] || '').replace(/[\r\n]+/g, "").trim();
+                    const research = (row['RESEARCH'] || '').replace(/[\r\n]+/g, "").trim();
                     let reference = (row['REFERENCE'] || '').trim();
 
                     if (!herbName || !drugName) continue;
@@ -105,11 +135,10 @@
                     const combinedExplanation = explanationParts.length > 0 ? explanationParts.join('，') : '無詳細說明';
 
                     let finalRefEntry = "";
-                    let cleanRef = reference ? reference.replace(/\r\n|\n|\r/g, " ").trim() : "";
+                    let cleanRef = reference ? reference.replace(/[\r\n]+/g, " ").trim() : "";
 
                     // 1. 如果是亂碼、#NAME? 或空值
                     if (!cleanRef || cleanRef.includes("#VALUE!") || cleanRef.includes("#NAME?")) {
-                        // 此時 research 的換行已經被清除了，例如會是乾淨的 "健保資料庫分析"
                         if (research) {
                             finalRefEntry = "- " + research;
                         }
@@ -126,7 +155,7 @@
                     } else if (cleanRef.includes("中國醫藥") || cleanRef.includes("dhi.cmu")) {
                         finalRefEntry = "- [中國醫藥大學中西藥交互作用資訊網](https://dhi.cmu.edu.tw/query/)";
                     
-                    // 3. 一般獨立文獻 (如蔡金川)，才需要加上 (研究方法)
+                    // 3. 一般獨立文獻
                     } else {
                         if (!cleanRef.startsWith('-')) cleanRef = '- ' + cleanRef;
                         if (research) {
@@ -164,21 +193,15 @@
                         const newContentEntry = `\n${nextNum}. ${drugName}；交互說明:${combinedExplanation}`;
                         v4Data[matchIndex][1] = currentContent + newContentEntry;
 
-                        // 【文獻去重寫入】：現在字串被清乾淨了，去重功能就能完美發揮
-                        if (finalRefEntry) {
-                            let existingRefs = currentCCol.split('\n').map(s => s.trim()).filter(s => s !== '');
-                            if (!existingRefs.includes(finalRefEntry)) {
-                                existingRefs.push(finalRefEntry);
-                            }
-                            v4Data[matchIndex][2] = existingRefs.join('\n');
-                        }
+                        // 【重點！】呼叫自動修復與去重引擎
+                        v4Data[matchIndex][2] = mergeAndDeduplicateRefs(currentCCol, finalRefEntry);
                         addedCount++;
 
                     } else {
                         // 建立全新中藥
                         const newContentBase = `中西藥交互作用說明\n中藥名稱：${herbName}\n1. ${drugName}；交互說明:${combinedExplanation}`;
                         
-                        let newRow = [targetTitle, newContentBase, finalRefEntry];
+                        let newRow = [targetTitle, newContentBase, mergeAndDeduplicateRefs("", finalRefEntry)];
                         if (v4Data[0] && v4Data[0].length > 3) {
                             for (let i = 3; i < v4Data[0].length; i++) newRow.push('');
                         }
