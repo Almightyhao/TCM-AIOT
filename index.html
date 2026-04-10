@@ -14,7 +14,7 @@
         
         <p class="mb-6 text-sm text-gray-600">
             請依序上傳「現有知識條目 (V4 檔)」與「欲新增的文獻 (Reference)」。<br>
-            系統內建<b>強制格式統一過濾器</b>，保證所有文獻接以單一連字號開頭，並清除行尾贅字。
+            系統內建<b>強制格式統一過濾器</b>，保證所有文獻接以單一連字號開頭，並過濾掉無意義的空泛文獻種類。
         </p>
 
         <div class="space-y-4 mb-8">
@@ -59,47 +59,34 @@
         // 【強制格式統一過濾器與去重引擎】
         // ==========================================
         function mergeAndDeduplicateRefs(existingText, newRef) {
-            // 1. 將舊文獻與新文獻合併，準備統一處理
             let rawText = (existingText || '') + '\n' + (newRef || '');
-
-            // 2. 修復被打碎的健保資料庫分析
             rawText = rawText.replace(/健\s*保\s*資\s*料\s*庫\s*分\s*析/g, "健保資料庫分析");
 
-            // 3. 依換行切開所有條目
             let lines = rawText.split(/\r?\n/).map(s => s.trim()).filter(s => s !== '');
             let repaired = [];
             
             for (let line of lines) {
-                // 略過純粹的廢行或單獨的 "-"
                 if (line === '-' || line === '') continue;
 
-                // 【關鍵 1】拔除行尾多餘的連字號 (例如: 三軍總醫院臨床藥學部-)
                 if (line.endsWith('-')) {
                     line = line.slice(0, -1).trim();
                 }
 
-                // 判斷行首屬性，決定如何接骨
                 if (line.startsWith('[')) {
-                    // 如果是 [ 開頭的超連結，強制幫它補上 "- "
                     repaired.push('- ' + line);
                 } else if (line.startsWith('-')) {
-                    // 如果是 - 開頭，標準化為 "- " (過濾掉 "-[" 變成 "- [")
                     repaired.push(line.replace(/^-+\s*/, '- '));
                 } else {
-                    // 既沒有 [ 也沒有 -，如果是斷掉的尾巴就接回上一句
                     if (repaired.length > 0) {
                         repaired[repaired.length - 1] += line;
                     } else {
-                        // 否則就當作新的一行，強制加上 "- "
                         repaired.push('- ' + line);
                     }
                 }
             }
             
-            // 4. 終極美容與去重
             let finalRefs = repaired.map(line => {
                 let cl = line.trim();
-                // 再次確保結尾絕對沒有 -
                 if (cl.endsWith('-')) cl = cl.slice(0, -1).trim();
                 return cl;
             }).filter(line => line !== '-');
@@ -160,9 +147,17 @@
                     let finalRefEntry = "";
                     let cleanRef = reference ? reference.replace(/[\r\n]+/g, " ").trim() : "";
 
-                    // 判斷與生成標準文獻格式
+                    // ==========================================
+                    // 【精準過濾】：處理缺少實際文獻的情況
+                    // ==========================================
                     if (!cleanRef || cleanRef.includes("#VALUE!") || cleanRef.includes("#NAME?")) {
-                        if (research) finalRefEntry = "- " + research;
+                        // 如果沒有文獻，且 Research 是「健保資料庫分析」才顯示。
+                        // 如果是「文獻回顧」等空泛詞彙，直接忽略留空！
+                        if (research && research.includes("健保資料庫分析")) {
+                            finalRefEntry = "- " + research;
+                        } else {
+                            finalRefEntry = ""; // 故意留空，不產生多餘的項目
+                        }
                     } else if (cleanRef.includes("三軍總醫院")) {
                         finalRefEntry = "- 三軍總醫院臨床藥學部";
                     } else if (cleanRef.includes("中西藥併用諮詢") || cleanRef.includes("cmdhi")) {
@@ -191,7 +186,7 @@
                         let currentContent = v4Data[matchIndex][1] || '';
                         let currentCCol = v4Data[matchIndex][2] || '';
 
-                        // 判斷是否重複 (只找 DRUGNAME)
+                        // 判斷是否重複
                         if (currentContent.toLowerCase().includes(drugName.toLowerCase())) {
                             skippedCount++;
                             continue;
@@ -209,15 +204,21 @@
                         const newContentEntry = `\n${nextNum}. ${drugName}；交互說明:${combinedExplanation}`;
                         v4Data[matchIndex][1] = currentContent + newContentEntry;
 
-                        // 【核心呼叫】用過濾器將舊有亂掉的資料與新資料一起送洗
-                        v4Data[matchIndex][2] = mergeAndDeduplicateRefs(currentCCol, finalRefEntry);
+                        // 只有當 finalRefEntry 不是空的，才送進去處理
+                        if (finalRefEntry !== "") {
+                            v4Data[matchIndex][2] = mergeAndDeduplicateRefs(currentCCol, finalRefEntry);
+                        } else {
+                            // 即使沒有新文獻，也順便用過濾器把舊的亂碼修復整理一下
+                            v4Data[matchIndex][2] = mergeAndDeduplicateRefs(currentCCol, "");
+                        }
+                        
                         addedCount++;
 
                     } else {
-                        // 建立全新中藥
                         const newContentBase = `中西藥交互作用說明\n中藥名稱：${herbName}\n1. ${drugName}；交互說明:${combinedExplanation}`;
                         
-                        let newRow = [targetTitle, newContentBase, mergeAndDeduplicateRefs("", finalRefEntry)];
+                        // 建立全新中藥，如果 finalRefEntry 為空，這格就會是空的
+                        let newRow = [targetTitle, newContentBase, finalRefEntry ? mergeAndDeduplicateRefs("", finalRefEntry) : ""];
                         if (v4Data[0] && v4Data[0].length > 3) {
                             for (let i = 3; i < v4Data[0].length; i++) newRow.push('');
                         }
