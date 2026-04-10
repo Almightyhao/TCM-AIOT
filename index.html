@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>中西藥交互作用知識庫整併工具</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+</head>
+<body class="bg-gray-50 text-gray-800 font-sans p-8">
+
+    <div class="max-w-3xl mx-auto bg-white p-8 rounded-lg shadow-md">
+        <h1 class="text-2xl font-bold mb-6 text-blue-700">中西藥交互作用 CSV 自動整併工具</h1>
+        
+        <p class="mb-6 text-sm text-gray-600">
+            請依序上傳目前的「現有知識條目 (V4)」與「欲新增的文獻 (Reference)」。<br>
+            系統將自動比對西藥去重、接續標號，並為尚未建立的中藥新增條目。
+        </p>
+
+        <div class="space-y-4 mb-8">
+            <div class="p-4 border border-gray-200 rounded">
+                <label class="block font-semibold mb-2">1. 選擇現有知識條目 (V4 CSV 檔):</label>
+                <input type="file" id="v4File" accept=".csv" class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100">
+            </div>
+
+            <div class="p-4 border border-gray-200 rounded">
+                <label class="block font-semibold mb-2">2. 選擇欲新增文獻 (Reference CSV 檔):</label>
+                <input type="file" id="refFile" accept=".csv" class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-green-50 file:text-green-700 hover:file:bg-green-100">
+            </div>
+        </div>
+
+        <button id="processBtn" class="w-full bg-blue-600 text-white font-bold py-3 px-4 rounded hover:bg-blue-700 transition disabled:bg-gray-400">
+            開始整併並下載新檔案
+        </button>
+
+        <div id="logArea" class="mt-6 p-4 bg-gray-100 rounded text-sm text-gray-700 h-48 overflow-y-auto whitespace-pre-wrap font-mono hidden"></div>
+    </div>
+
+    <script>
+        const processBtn = document.getElementById('processBtn');
+        const logArea = document.getElementById('logArea');
+
+        function log(msg) {
+            logArea.classList.remove('hidden');
+            logArea.textContent += msg + '\n';
+            logArea.scrollTop = logArea.scrollHeight;
+        }
+
+        function readFileAsText(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = e => resolve(e.target.result);
+                reader.onerror = e => reject(e);
+                reader.readAsText(file);
+            });
+        }
+
+        processBtn.addEventListener('click', async () => {
+            const v4Input = document.getElementById('v4File');
+            const refInput = document.getElementById('refFile');
+
+            if (!v4Input.files[0] || !refInput.files[0]) {
+                alert("請確保兩個 CSV 檔案都已上傳！");
+                return;
+            }
+
+            logArea.textContent = ''; // 清空日誌
+            processBtn.disabled = true;
+            processBtn.textContent = '處理中...';
+
+            try {
+                log("讀取檔案中...");
+                const v4Raw = await readFileAsText(v4Input.files[0]);
+                const refRaw = await readFileAsText(refInput.files[0]);
+
+                // 解析 V4 (使用二維陣列保留原始結構)
+                const v4Parsed = Papa.parse(v4Raw, { header: false, skipEmptyLines: true });
+                let v4Data = v4Parsed.data;
+
+                // 解析 Reference (使用物件方便依欄位名稱取值)
+                const refParsed = Papa.parse(refRaw, { header: true, skipEmptyLines: true });
+                const refData = refParsed.data;
+
+                let addedCount = 0;
+                let newHerbCount = 0;
+                let skippedCount = 0;
+
+                log(`成功讀取 V4 共有 ${v4Data.length} 行資料`);
+                log(`成功讀取 Reference 共有 ${refData.length} 筆資料\n---`);
+
+                // 開始比對
+                for (let row of refData) {
+                    const herbName = (row['HERBNAME'] || '').trim();
+                    const drugName = (row['DRUGNAME'] || '').trim();
+                    const abstract = (row['IABSTRACT'] || '').trim();
+                    const mngText = (row['MNGTEXT'] || '').trim();
+                    const research = (row['RESEARCH'] || '').trim();
+                    const reference = (row['REFERENCE'] || '').trim();
+
+                    if (!herbName || !drugName) continue;
+
+                    const targetTitle = `${herbName}的中西藥藥物交互作用(drug-drug) interaction, DDI)說明`;
+                    
+                    // 組合解說文字
+                    let explanationParts = [];
+                    if (abstract) explanationParts.push(abstract);
+                    if (mngText) explanationParts.push(`處置建議為${mngText}`);
+                    const combinedExplanation = explanationParts.length > 0 ? explanationParts.join('，') : '無詳細說明';
+
+                    // 尋找 V4 中對應的 Title (假設 title 在第一欄 index 0)
+                    let matchIndex = v4Data.findIndex(vRow => vRow[0] && vRow[0].trim() === targetTitle);
+
+                    if (matchIndex !== -1) {
+                        // 【已存在中藥】
+                        let currentContent = v4Data[matchIndex][1] || '';
+                        let currentCCol = v4Data[matchIndex][2] || '';
+
+                        // 防呆去重：若該西藥已存在
+                        if (currentContent.toLowerCase().includes(drugName.toLowerCase())) {
+                            skippedCount++;
+                            continue;
+                        }
+
+                        // 抓取最大標號
+                        let nextNum = 1;
+                        const numRegex = /^(\d+)\./gm;
+                        let match;
+                        while ((match = numRegex.exec(currentContent)) !== null) {
+                            let num = parseInt(match[1]);
+                            if (num >= nextNum) nextNum = num + 1;
+                        }
+
+                        const newContentEntry = `\n${nextNum}. ${drugName}；交互說明:${combinedExplanation}`;
+                        const newRefEntry = `[${nextNum}] 文獻種類：${research}\n文獻來源：${reference}`;
+
+                        v4Data[matchIndex][1] = currentContent + newContentEntry;
+                        v4Data[matchIndex][2] = currentCCol.trim() ? (currentCCol + "\n\n" + newRefEntry) : newRefEntry;
+                        addedCount++;
+
+                    } else {
+                        // 【尚未建立的中藥】自動新增一列
+                        const newContentBase = `中西藥交互作用說明\n中藥名稱：${herbName}\n1. ${drugName}；交互說明:${combinedExplanation}`;
+                        const newRefEntry = `[1] 文獻種類：${research}\n文獻來源：${reference}`;
+                        
+                        // 建立新陣列 (Title, Content, Reference(C欄), 其他欄位留空)
+                        let newRow = [targetTitle, newContentBase, newRefEntry];
+                        // 如果 V4 標題列有多於 3 欄，補齊空字串
+                        if (v4Data[0] && v4Data[0].length > 3) {
+                            for (let i = 3; i < v4Data[0].length; i++) newRow.push('');
+                        }
+                        
+                        v4Data.push(newRow);
+                        newHerbCount++;
+                        addedCount++;
+                        log(`[新增條目] 建立全新中藥：${herbName}`);
+                    }
+                }
+
+                log(`---\n整併完成！`);
+                log(`- 成功新增 ${addedCount} 筆交互作用`);
+                log(`- 其中包含 ${newHerbCount} 個全新中藥條目`);
+                log(`- 略過重複西藥 ${skippedCount} 筆`);
+
+                // 轉出 CSV
+                const csvOutput = Papa.unparse(v4Data);
+                
+                // 加入 BOM 讓 Excel 能正確讀取 UTF-8 中文
+                const blob = new Blob(["\uFEFF" + csvOutput], { type: 'text/csv;charset=utf-8;' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `中西藥交互_V4_Updated_${new Date().toISOString().slice(0,10)}.csv`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+
+            } catch (err) {
+                console.error(err);
+                alert("處理過程中發生錯誤，請檢查檔案格式是否正確。");
+            } finally {
+                processBtn.disabled = false;
+                processBtn.textContent = '開始整併並下載新檔案';
+            }
+        });
+    </script>
+</body>
+</html>
