@@ -14,7 +14,7 @@
         
         <p class="mb-6 text-sm text-gray-600">
             請依序上傳目前的「現有知識條目 (V4)」與「欲新增的文獻 (Reference)」。<br>
-            系統將自動比對西藥去重、接續標號，並為尚未建立的中藥新增條目。
+            系統將自動比對西藥去重、接續標號，並智慧合併文獻來源。
         </p>
 
         <div class="space-y-4 mb-8">
@@ -104,33 +104,34 @@
                     if (mngText) explanationParts.push(`處置建議為${mngText}`);
                     const combinedExplanation = explanationParts.length > 0 ? explanationParts.join('，') : '無詳細說明';
 
-                    // 2. 【核心更新】處理 Reference 與 Research 合併格式
-                    let cleanRef = reference.replace(/\r\n|\n|\r/g, " ").trim();
+                    // 2. 【核心更新：智慧文獻格式化】
                     let finalRefEntry = "";
-
-                    if (!cleanRef || cleanRef.includes("#VALUE!") || cleanRef.includes("#NAME?")) {
-                        // 處理無效資料
-                        finalRefEntry = `- [中國醫藥大學中西藥交互作用資訊網](https://dhi.cmu.edu.tw/query/)`;
-                        if (research) {
-                            finalRefEntry += ` (${research})`;
-                        }
-                    } else {
-                        // 確保前面有 "-" 符號
-                        if (!cleanRef.startsWith('-')) {
-                            cleanRef = '- ' + cleanRef;
-                        }
+                    if (reference && !reference.includes("#VALUE!") && !reference.includes("#NAME?")) {
+                        let cleanRef = reference.replace(/\r\n|\n|\r/g, " ").trim();
                         
-                        // 智慧合併文獻種類 (Research)
-                        if (research) {
-                            if (cleanRef.endsWith(')')) {
-                                // 如果結尾有括號，打開它並塞入 '/文獻種類'
-                                cleanRef = cleanRef.slice(0, -1) + `/${research})`;
-                            } else {
-                                // 沒有括號就直接補在後面
-                                cleanRef += ` (${research})`;
+                        // 自動將關鍵字映射為標準 Markdown 連結 (不加後綴研究方法)
+                        if (cleanRef.includes("三軍總醫院")) {
+                            finalRefEntry = "- 三軍總醫院臨床藥學部";
+                        } else if (cleanRef.includes("中西藥併用諮詢") || cleanRef.includes("cmdhi")) {
+                            finalRefEntry = "- [中西藥併用諮詢資料庫](https://www.cmdhi.mohw.gov.tw/)";
+                        } else if (cleanRef.includes("奇美")) {
+                            finalRefEntry = "- [奇美藥劑部中西藥交互作用查詢系統](https://www.chimei.org.tw/main/cmh_department/55500/DIS/cdi_search.asp)";
+                        } else if (cleanRef.includes("高雄醫學") || cleanRef.includes("高醫")) {
+                            finalRefEntry = "- [高雄醫學大學附設中和紀念醫院](https://www.kmuh.org.tw/www/pharmacy/inc/files/ChineseMedInteration.pdf)";
+                        } else if (cleanRef.includes("中國醫藥") || cleanRef.includes("dhi.cmu")) {
+                            finalRefEntry = "- [中國醫藥大學中西藥交互作用資訊網](https://dhi.cmu.edu.tw/query/)";
+                        } else {
+                            // 若為一般文獻(如蔡金川)，則照舊加上標記與 Research
+                            if (!cleanRef.startsWith('-')) cleanRef = '- ' + cleanRef;
+                            if (research) {
+                                if (cleanRef.endsWith(')')) {
+                                    cleanRef = cleanRef.slice(0, -1) + `/${research})`;
+                                } else {
+                                    cleanRef += ` (${research})`;
+                                }
                             }
+                            finalRefEntry = cleanRef;
                         }
-                        finalRefEntry = cleanRef;
                     }
 
                     let matchIndex = v4Data.findIndex(vRow => vRow[0] && vRow[0].trim() === targetTitle);
@@ -139,12 +140,13 @@
                         let currentContent = v4Data[matchIndex][1] || '';
                         let currentCCol = v4Data[matchIndex][2] || '';
 
-                        // 判斷是否重複
+                        // 防呆去重：若該西藥已存在
                         if (currentContent.toLowerCase().includes(drugName.toLowerCase())) {
                             skippedCount++;
                             continue;
                         }
 
+                        // 抓取最大標號
                         let nextNum = 1;
                         const numRegex = /^(\d+)\./gm;
                         let match;
@@ -153,18 +155,26 @@
                             if (num >= nextNum) nextNum = num + 1;
                         }
 
-                        // 新增西藥內容 (保持編號)
+                        // 新增西藥內容
                         const newContentEntry = `\n${nextNum}. ${drugName}；交互說明:${combinedExplanation}`;
-
-                        // 寫入 V4 (文獻不再加編號，直接換行條列)
                         v4Data[matchIndex][1] = currentContent + newContentEntry;
-                        v4Data[matchIndex][2] = currentCCol.trim() ? (currentCCol + "\n" + finalRefEntry) : finalRefEntry;
+
+                        // 【核心更新：文獻去重邏輯】
+                        // 將目前的文獻欄位拆分成陣列比對，避免重複加入相同的連結
+                        let existingRefs = currentCCol.split('\n').map(s => s.trim()).filter(s => s !== '');
+                        if (finalRefEntry && !existingRefs.includes(finalRefEntry)) {
+                            existingRefs.push(finalRefEntry); // 只有當這條文獻不存在時才加入
+                        }
+                        v4Data[matchIndex][2] = existingRefs.join('\n'); // 重新組合並寫回
+                        
                         addedCount++;
 
                     } else {
+                        // 建立全新中藥
                         const newContentBase = `中西藥交互作用說明\n中藥名稱：${herbName}\n1. ${drugName}；交互說明:${combinedExplanation}`;
                         
                         let newRow = [targetTitle, newContentBase, finalRefEntry];
+                        // 補齊可能存在的空白欄位
                         if (v4Data[0] && v4Data[0].length > 3) {
                             for (let i = 3; i < v4Data[0].length; i++) newRow.push('');
                         }
